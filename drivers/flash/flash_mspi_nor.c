@@ -303,6 +303,32 @@ static void command_set(const struct device *dev, const struct flash_mspi_nor_cm
 	dev_data->packet.cmd = cmd->cmd;
 }
 
+static int single_mode_apply(const struct device *dev)
+{
+	const struct flash_mspi_nor_config *dev_config = dev->config;
+	struct mspi_dev_cfg single_dev_cfg = dev_config->mspi_cfg;
+
+	single_dev_cfg.io_mode = MSPI_IO_MODE_SINGLE;
+	int rc = mspi_dev_config(dev_config->bus, &dev_config->mspi_id,
+				 dev_config->mspi_cfg_mask, &single_dev_cfg);
+	if (rc < 0) {
+		LOG_ERR("Failed to set single lane device config: %d", rc);
+	}
+	return rc;
+}
+
+static int normal_mode_apply(const struct device *dev)
+{
+	const struct flash_mspi_nor_config *dev_config = dev->config;
+
+	int rc = mspi_dev_config(dev_config->bus, &dev_config->mspi_id,
+				 dev_config->mspi_cfg_mask, &dev_config->mspi_cfg);
+	if (rc < 0) {
+		LOG_ERR("Failed to set normal device config: %d", rc);
+	}
+	return rc;
+}
+
 static int api_read(const struct device *dev, off_t addr, void *dest,
 		    size_t size)
 {
@@ -347,11 +373,17 @@ static int status_get(const struct device *dev, uint8_t *status)
 	const struct flash_mspi_nor_config *dev_config = dev->config;
 	struct flash_mspi_nor_data *dev_data = dev->data;
 
+	single_mode_apply(dev);
+
 	command_set(dev, &dev_config->jedec_cmds->status);
 	dev_data->packet.data_buf  = status;
 	dev_data->packet.num_bytes = sizeof(uint8_t);
 
-	return mspi_transceive(dev_config->bus, &dev_config->mspi_id, &dev_data->xfer);
+	int rc = mspi_transceive(dev_config->bus, &dev_config->mspi_id, &dev_data->xfer);
+
+	normal_mode_apply(dev);
+
+	return rc;
 }
 
 static int wait_until_ready(const struct device *dev, k_timeout_t poll_period)
@@ -476,6 +508,8 @@ static int api_erase(const struct device *dev, off_t addr, size_t size)
 			break;
 		}
 
+		single_mode_apply(dev);
+
 		if (size == flash_size) {
 			/* Chip erase. */
 			command_set(dev, &dev_config->jedec_cmds->chip_erase);
@@ -525,6 +559,7 @@ static int read_jedec_id(const struct device *dev, uint8_t *id)
 	struct flash_mspi_nor_data *dev_data = dev->data;
 	int rc;
 
+	single_mode_apply(dev);
 	command_set(dev, &dev_config->jedec_cmds->id);
 	dev_data->packet.data_buf  = id;
 	dev_data->packet.num_bytes = JESD216_READ_ID_LEN;
@@ -686,12 +721,16 @@ static int flash_chip_init(const struct device *dev)
 		LOG_ERR("Failed to switch mode: %d", rc);
 	}
 
+	uint8_t st;
+	(void)status_get(dev, &st);
+#if 0
 	rc = mspi_dev_config(dev_config->bus, &dev_config->mspi_id,
 			     MSPI_DEVICE_CONFIG_ALL, &dev_config->mspi_cfg);
 	if (rc < 0) {
 		LOG_ERR("Failed to set device config: %d", rc);
 		return rc;
 	}
+
 
 	rc = read_jedec_id(dev, id);
 	if (rc < 0) {
@@ -707,7 +746,7 @@ static int flash_chip_init(const struct device *dev)
 			dev_config->jedec_id[2]);
 		return -ENODEV;
 	}
-
+#endif
 #if defined(CONFIG_MSPI_XIP)
 	/* Enable XIP access for this chip if specified so in DT. */
 	if (dev_config->xip_cfg.enable) {
